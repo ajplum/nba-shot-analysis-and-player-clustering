@@ -1,0 +1,6 @@
+"","Cluster","Summary","Shot Clock Insight","Dribble Insight","Touch Time Insight","Efficiency Insight"
+"1",1,"High volume, Efficiency Shooters","Highly efficient in 22–15 SC range","Less efficient after 7 dribbles; Medium efficiency at 2–6 dribbles","Less efficient when TT ≥ 6 sec","Very efficient overall"
+"2",2,"High volume, Shot Creators","Consistent FG% regardless of defender","Efficient with more dribbles; Most shots at 3–6 dribbles","Most shots with TT ≥ 3 sec; Few quick shots","Stays within 44–48% FG% range"
+"3",3,"Steady Shooters, Catch & shoot","","Take most threes with 0 dribbles","Highest 3PT frequency with TT 0–2 sec","Shooting is steady across dribbles"
+"4",4,"Assisted, Efficient 2PT Shooters","","Take more than half shots with 0 dribbles; efficiency drops with more dribbles","Most shots with TT 0–2 sec","Most efficient at two-pointers"
+"5",5,"Low volume, Rim-focused Bigs","","30% frequency with 0 dribbles; mostly 2s","Best and most frequent at TT 0–2 sec","Low overall shooting, focused near rim"

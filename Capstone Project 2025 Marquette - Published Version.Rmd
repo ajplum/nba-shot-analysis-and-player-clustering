@@ -1,0 +1,1775 @@
+---
+title: "Capstone Project 2025 Marquette - Published Version"
+output: html_document
+  # flexdashboard::flex_dashboard:
+  #   orientation: columns
+  #   vertical_layout: fill
+runtime: shiny
+---
+
+#Load Libraries & Data
+```{r setup, include=FALSE, warning=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+##clear your working directory
+rm(list=ls())
+
+
+remotes::install_github("rstudio/gt")
+
+##load libraries
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(shiny)
+library(openxlsx)
+library(shinyWidgets)
+library(plotly) 
+library(BasketballAnalyzeR)
+library(janitor)
+library(readxl)
+library(shinydashboard)
+library(cluster)
+library(stringi)
+library(gt)
+library(grid)
+
+
+# Load 2003-04 shot data
+shots1 <- read.csv("shots1.csv")
+shots2 <- read.csv("shots2.csv")
+shots3 <- read.csv("shots3.csv")
+shots4 <- read.csv("shots4.csv")
+
+shots <- rbind(shots1,shots2,shots3,shots4)
+
+
+# Defense data set only contains games up to March 4th in 2014-2015 season, can still be used but must mention that it's incomplete
+defense <- read.csv('shot_logs.csv')
+
+# Remove incomplete data from analysis
+defense <- defense[complete.cases(defense),]
+shots_0424 <- shots_0424[complete.cases(shots_0424),]
+
+# Load in 2013-14 to 2023-24 Situational Data & Playoff Teams from 2003-04 to 2023-24
+path <- "NBA Shot Data by Category.xlsx"
+sheet_names <- excel_sheets(path)
+dfs <- lapply(sheet_names, function(sheet) read_excel(path, sheet = sheet))
+names(dfs) <- sheet_names
+list2env(dfs, envir = .GlobalEnv)
+```
+
+
+
+```{r}
+
+# Create a list of all players contained in every Defender dataset
+Defender_players <- Reduce(intersect, list(
+  `Defender 0-2 Feet`$PLAYER,
+  `Defender 2-4 Feet`$PLAYER,
+  `Defender 4-6 Feet`$PLAYER,
+  `Defender 6+ Feet`$PLAYER
+))
+
+# Filter each dataset to keep only the common players then combine them
+`Defender 0-2 Feet` <- `Defender 0-2 Feet` %>% filter(PLAYER %in% Defender_players)
+`Defender 2-4 Feet` <- `Defender 2-4 Feet` %>% filter(PLAYER %in% Defender_players)
+`Defender 4-6 Feet` <- `Defender 4-6 Feet` %>% filter(PLAYER %in% Defender_players)
+`Defender 6+ Feet` <- `Defender 6+ Feet` %>% filter(PLAYER %in% Defender_players)
+
+Defender <- rbind(`Defender 0-2 Feet`,`Defender 2-4 Feet`,`Defender 4-6 Feet`,`Defender 6+ Feet`)
+
+# Remove players with mising data, dash means they haven't taken a shot under this cicumstance so replacing with zero would skew data 
+Defender[Defender=="-"]<-NA
+
+Defender <- Defender[complete.cases(Defender),]
+
+# Remove Character columns, convert statistics to numbers, then merge character columns back in 
+identifiers <- Defender %>% 
+  dplyr::select(c(PLAYER, AGE, TEAM, G, GP, Season, `Defender Distance (ft)`))
+
+Defender <- Defender %>%
+  dplyr::select(-c(PLAYER, AGE, TEAM, G, GP, Season, `Defender Distance (ft)`)) %>%
+  mutate(across(where(is.character),
+                ~as.numeric(as.character(.))))
+
+Defender <- data.frame(identifiers, Defender) %>%  
+  clean_names() %>%
+  rename_with(~ sub("^x", "", .))
+
+# Create factor for Defender Distance to use for graphs
+Defender$defender_distance_ft <- factor(
+  Defender$defender_distance_ft,
+  levels = c("0-2","2-4","4-6", "6+"),
+  ordered = TRUE
+)
+
+
+
+SC_players <- Reduce(intersect, list(
+  `24-22 Shot Clock`$PLAYER,
+  `22-18 Shot Clock`$PLAYER,
+  `18-15 Shot Clock`$PLAYER,
+  `15-7 Shot Clock `$PLAYER,
+  `7-4 Shot Clock`$PLAYER,
+  `4-0 Shot Clock`$PLAYER
+))
+
+`24-22 Shot Clock` <- `24-22 Shot Clock` %>% filter(PLAYER %in% SC_players)
+`22-18 Shot Clock` <- `22-18 Shot Clock` %>% filter(PLAYER %in% SC_players)
+`18-15 Shot Clock` <- `18-15 Shot Clock` %>% filter(PLAYER %in% SC_players)
+`15-7 Shot Clock ` <- `15-7 Shot Clock ` %>% filter(PLAYER %in% SC_players)
+`7-4 Shot Clock` <- `7-4 Shot Clock` %>% filter(PLAYER %in% SC_players)
+`4-0 Shot Clock` <- `4-0 Shot Clock` %>% filter(PLAYER %in% SC_players)
+
+                                                
+Shot_Clock <- rbind(`24-22 Shot Clock`,`22-18 Shot Clock`,`18-15 Shot Clock`,`15-7 Shot Clock `,`7-4 Shot Clock`, `4-0 Shot Clock`)
+
+Shot_Clock[Shot_Clock=="-"]<-NA
+
+Shot_Clock <- Shot_Clock[complete.cases(Shot_Clock),]
+
+identifiers <- Shot_Clock %>%
+  dplyr::select(c(PLAYER, AGE, TEAM, G, GP, Season, `Shot Clock (sec)`))
+
+Shot_Clock <- Shot_Clock %>%
+  dplyr::select(-c(PLAYER, AGE, TEAM, G, GP, Season, `Shot Clock (sec)`)) %>%
+  mutate(across(where(is.character),
+                ~as.numeric(as.character(.))))
+
+Shot_Clock <- data.frame(identifiers, Shot_Clock) %>%  
+  clean_names() %>%
+  rename_with(~ sub("^x", "", .))
+
+Shot_Clock$shot_clock_sec <- factor(
+  Shot_Clock$shot_clock_sec,
+  levels = c("24-22", "22-18", "18-15", "15-7", "7-4", "4-0"),
+  ordered = TRUE
+)
+                                      
+
+
+TT_players <- Reduce(intersect, list(
+  `Touch Time 0-2 Sec`$PLAYER,
+  `Touch Time 2-6 Sec`$PLAYER,
+  `Touch TIme 6+ Sec`$PLAYER
+))
+
+
+`Touch Time 0-2 Sec` <- `Touch Time 0-2 Sec` %>% filter(PLAYER %in% TT_players)
+`Touch Time 2-6 Sec` <- `Touch Time 2-6 Sec` %>% filter(PLAYER %in% TT_players)
+`Touch TIme 6+ Sec` <- `Touch TIme 6+ Sec` %>% filter(PLAYER %in% TT_players)
+
+                                                
+Touch_Time <- rbind(`Touch Time 0-2 Sec`,`Touch Time 2-6 Sec`,`Touch TIme 6+ Sec`)
+
+Touch_Time[Touch_Time=="-"]<-NA
+
+Touch_Time <- Touch_Time[complete.cases(Touch_Time),]
+
+identifiers <- Touch_Time %>%
+  dplyr::select(c(PLAYER, AGE, TEAM, G, GP, Season, `Touch Time (sec)`))
+
+Touch_Time <- Touch_Time %>%
+  dplyr::select(-c(PLAYER, AGE, TEAM, G, GP, Season, `Touch Time (sec)`)) %>%
+  mutate(across(where(is.character),
+                ~as.numeric(as.character(.))))
+
+Touch_Time <- data.frame(identifiers, Touch_Time) %>%  
+  clean_names() %>%
+  rename_with(~ sub("^x", "", .))
+
+
+Touch_Time$touch_time_sec <- factor(
+  Touch_Time$touch_time_sec,
+  levels = c("0-2","2-6", "6+"),
+  ordered = TRUE
+)
+
+
+
+Dribble_players <- Reduce(intersect, list(
+  `0 Dribbles `$PLAYER,
+  `1 Dribble`$PLAYER,
+  `2 Dribbles`$PLAYER,
+  `3-6 Dribbles`$PLAYER,
+  `7+ Dribbles`$PLAYER
+  
+))
+
+
+`0 Dribbles ` <- `0 Dribbles ` %>% filter(PLAYER %in% Dribble_players)
+`1 Dribble`<- `1 Dribble` %>% filter(PLAYER %in% Dribble_players)
+`2 Dribbles` <- `2 Dribbles` %>% filter(PLAYER %in% Dribble_players)
+`3-6 Dribbles` <- `3-6 Dribbles`  %>% filter(PLAYER %in% Dribble_players)
+`7+ Dribbles` <- `7+ Dribbles` %>% filter(PLAYER %in% Dribble_players)
+
+                                                
+Dribbles <- rbind(`0 Dribbles `, `1 Dribble`, `2 Dribbles`, `3-6 Dribbles`, `7+ Dribbles`)
+
+Dribbles[Dribbles=="-"]<-NA
+
+Dribbles <- Dribbles[complete.cases(Dribbles),]
+
+identifiers <- Dribbles %>%
+  dplyr::select(c(PLAYER, AGE, TEAM, G, GP, Season, Dribbles))
+
+Dribbles <- Dribbles %>%
+  dplyr::select(-c(PLAYER, AGE, TEAM, G, GP, Season, Dribbles)) %>%
+  mutate(across(where(is.character),
+                ~as.numeric(as.character(.))))
+
+Dribbles <- data.frame(identifiers, Dribbles) %>%  
+  clean_names() %>%
+  rename_with(~ sub("^x", "", .))
+
+
+Dribbles$dribbles <- factor(
+  Dribbles$dribbles,
+  levels = c("0 Drib", "1 Drib", "2 Drib","3-6 Drib", "7+ Drib"),
+  ordered = TRUE
+)
+
+
+```
+
+
+
+```{r}
+
+# Remove Back Court shots & "No Shots" for better analysis + focus only on regulation and first two overtimes
+shots_0424 <- shots_0424[shots_0424$ZONE_NAME != "Back Court" & shots_0424$ACTION_TYPE != "No Shot" & shots_0424$QUARTER <= 6, ]
+
+# Adjust y axis for tracking to fit BasketballAnalyzeR plot
+shots_0424$LOC_Y <- shots_0424$LOC_Y - 47
+
+# Convert to "made and "missed" for BasketballAnalyzeR
+shots_0424$SHOT_MADE <- ifelse(shots_0424$SHOT_MADE == "TRUE", "made","missed")
+
+# Some shots with ranges inside the arc were labeled as 3PT FGs, converting these to 2PT FGs
+shots_0424$SHOT_TYPE <- ifelse((shots_0424$ZONE_RANGE == "Less Than 8 ft." | shots_0424$ZONE_RANGE == "8-16 ft.") & shots_0424$SHOT_TYPE == "3PT Field Goal", "2PT Field Goal", shots_0424$SHOT_TYPE)
+
+
+# Calculate Shot Number to use for analysis on dashboard later
+shot_num <- shots_0424 %>%
+  group_by(PLAYER_NAME, GAME_DATE) %>%
+  arrange(QUARTER, desc(MINS_LEFT), desc(SECS_LEFT)) %>%
+  mutate(SHOT_NUMBER = row_number()) %>%
+  ungroup() %>%
+  filter(SEASON_2 %in% c("2013-14", "2014-15", "2015-16", "2016-17", "2017-18", "2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24")) %>%
+  group_by(PLAYER_NAME, SEASON_2, SHOT_NUMBER, SHOT_MADE) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  group_by(PLAYER_NAME, SEASON_2, SHOT_NUMBER) %>%
+  mutate(total = sum(count), percentage = (count / total) * 100) %>%
+  filter(SHOT_MADE == "made", total >= 6)
+
+
+
+
+
+
+shots_0424$FRANCHISE <- case_when(shots_0424$TEAM_NAME == "New Jersey Nets" ~ "Brooklyn Nets",
+                                  grepl("New Orleans", shots_0424$TEAM_NAME) == TRUE ~ "New Orleans Pelicans",
+                                  grepl("Charlotte", shots_0424$TEAM_NAME) == TRUE ~ "Charlotte Hornets",
+                                  shots_0424$TEAM_NAME == "Seattle SuperSonics" ~ "Seattle SuperSonics",
+                                  grepl("Clippers", shots_0424$TEAM_NAME) == TRUE ~ "Los Angeles Clippers",
+                                  TRUE ~ shots_0424$TEAM_NAME)
+
+
+# Making my own zone ranges to match shot chart because 16-24ft overlaps 2 different zones
+# Zones are 0-4ft (Restricted area), 4-16ft (Mid Range), 16-24 ft (only for center, left side center & right side center), 16-22 ft for left and right side, 24+ for right side center, left side center, and center
+
+shots_0424$NEW_ZONE <- case_when(
+  shots_0424$SHOT_DISTANCE <= 4 ~ "0-4ft (Restricted area)",
+  shots_0424$SHOT_DISTANCE > 4 & shots_0424$SHOT_DISTANCE <= 16 & shots_0424$ZONE_NAME == "Left Side"  ~ "4-16ft Left Mid Range",
+  shots_0424$SHOT_DISTANCE > 4 & shots_0424$SHOT_DISTANCE <= 16 & shots_0424$ZONE_NAME == "Right Side"  ~ "4-16ft Right Mid Range",
+  shots_0424$SHOT_DISTANCE > 4 & shots_0424$SHOT_DISTANCE <= 16 & shots_0424$ZONE_NAME == "Center"  ~ "4-16ft Center Mid Range",
+  shots_0424$SHOT_DISTANCE > 4 & shots_0424$SHOT_DISTANCE <= 16 & shots_0424$ZONE_NAME == "Right Side Center"  ~ "4-16ft Right Center Mid Range",
+  shots_0424$SHOT_DISTANCE > 4 & shots_0424$SHOT_DISTANCE <= 16 & shots_0424$ZONE_NAME == "Left Side Center"  ~ "4-16ft Left Center Mid Range",
+  shots_0424$SHOT_DISTANCE > 16 & shots_0424$SHOT_DISTANCE < 24 & shots_0424$ZONE_NAME == "Center"  ~ "16-24ft Center High Mid Range",
+  shots_0424$SHOT_DISTANCE > 16 & shots_0424$SHOT_DISTANCE < 24 & shots_0424$ZONE_NAME == "Left Side Center"  ~ "16-24ft Left Center High Mid Range",
+  shots_0424$SHOT_DISTANCE > 16 & shots_0424$SHOT_DISTANCE < 24 & shots_0424$ZONE_NAME == "Right Side Center"  ~ "16-24ft Right Center High Mid Range",
+  shots_0424$SHOT_DISTANCE > 16 & shots_0424$SHOT_DISTANCE <= 22 & shots_0424$ZONE_NAME == "Left Side"  ~ "16-22ft Left High Mid Range",
+  shots_0424$SHOT_DISTANCE > 16 & shots_0424$SHOT_DISTANCE <= 22 & shots_0424$ZONE_NAME == "Right Side"  ~ "16-22ft Right High Mid Range",
+  shots_0424$SHOT_DISTANCE > 22 & shots_0424$ZONE_NAME == "Left Side"  ~ "22ft+ Left Corner 3pt",
+  shots_0424$SHOT_DISTANCE > 22 & shots_0424$ZONE_NAME == "Right Side"  ~ "22ft+ Right Corner 3pt",
+  shots_0424$SHOT_DISTANCE >= 24 & shots_0424$ZONE_NAME == "Left Side Center"  ~ "24ft+ Left Center 3pt",
+  shots_0424$SHOT_DISTANCE >= 24 & shots_0424$ZONE_NAME == "Right Side Center"  ~ "24ft+ Right Center 3pt",
+  shots_0424$SHOT_DISTANCE >= 24 & shots_0424$ZONE_NAME == "Center"  ~ "24ft+ Center 3pt",
+  TRUE ~ "NA"
+)
+
+# Create a column for points earned on each shot, to use for analysis later
+shots_0424$PTS <- ifelse(shots_0424$SHOT_TYPE == "2PT Field Goal" & shots_0424$SHOT_MADE == "made", 2, ifelse(shots_0424$SHOT_TYPE == "3PT Field Goal" & shots_0424$SHOT_MADE == "made", 3, 0))
+
+
+# Creating Areas to gener
+close_mid <- c("4-16ft Left Mid Range", "4-16ft Right Mid Range", "4-16ft Center Mid Range", "4-16ft Left Center Mid Range", "4-16ft Right Center Mid Range")
+high_mid <- c("16-22ft Left High Mid Range","16-22ft Right High Mid Range", "16-24ft Center High Mid Range","16-24ft Left Center High Mid Range" ,"16-24ft Right Center High Mid Range")
+corners <- c("22ft+ Left Corner 3pt", "22ft+ Right Corner 3pt")
+three <- c("24ft+ Left Center 3pt","24ft+ Right Center 3pt", "24ft+ Center 3pt")
+restricted <- "0-4ft (Restricted area)"
+
+
+
+shots_0424$Area <- ifelse(shots_0424$NEW_ZONE %in% close_mid, "Mid-Range",
+                           ifelse(shots_0424$NEW_ZONE %in% high_mid, "Deep Two",
+                                  ifelse(shots_0424$NEW_ZONE %in% corners, "Corner Three",
+                                         ifelse(shots_0424$NEW_ZONE %in% three, "High Three",
+                                                ifelse(shots_0424$NEW_ZONE == restricted, "Restricted Area",
+                                                NA)))))
+  
+
+
+PlayoffTeams$FRANCHISE <- case_when(PlayoffTeams$FRANCHISE == "New Jersey Nets" ~ "Brooklyn Nets",
+                                  grepl("New Orleans", PlayoffTeams$FRANCHISE) == TRUE ~ "New Orleans Pelicans",
+                                  grepl("Charlotte", PlayoffTeams$FRANCHISE) == TRUE ~ "Charlotte Hornets",
+                                  PlayoffTeams$FRANCHISE == "Seattle SuperSonics" ~ "Oklahoma City Thunder",
+                                  grepl("Clippers", PlayoffTeams$FRANCHISE) == TRUE ~ "Los Angeles Clippers",
+                                  TRUE ~ PlayoffTeams$FRANCHISE)
+
+
+by_team <- join_by(SEASON_2 == SEASON_2 ,FRANCHISE == FRANCHISE)
+shots_0424 <- shots_0424 %>% 
+  left_join(PlayoffTeams, by=by_team)
+
+shots_0424$Playoffs <- ifelse(is.na(shots_0424$Playoffs), FALSE, shots_0424$Playoffs)
+
+
+finals_04 <- c("Detroit Pistons", "Los Angeles Lakers")
+finals_05 <- c("San Antonio Spurs", "Detroit Pistons")
+finals_06 <- c("Dallas Mavericks", "Miami Heat")
+finals_07 <- c("San Antonio Spurs", "Cleveland Cavaliers")
+finals_08 <- c("Boston Celtics", "Los Angeles Lakers")
+finals_09 <- c("Los Angeles Lakers", "Orlando Magic")
+finals_10 <- c("Boston Celtics", "Los Angeles Lakers")
+finals_11 <- c("Dallas Mavericks", "Miami Heat")
+finals_12 <- c("Oklahoma City Thunder", "Miami Heat")
+finals_13 <- c("San Antonio Spurs", "Miami Heat")
+finals_14 <- c("San Antonio Spurs", "Miami Heat")
+finals_15 <- c("Golden State Warriors", "Cleveland Cavaliers")
+finals_16 <- c("Cleveland Cavaliers", "Golden State Warriors")
+finals_17 <- c("Golden State Warriors", "Cleveland Cavaliers")
+finals_18 <- c("Golden State Warriors", "Cleveland Cavaliers")
+finals_19 <- c("Toronto Raptors", "Golden State Warriors")
+finals_20 <- c("Los Angeles Lakers", "Miami Heat")
+finals_21 <- c("Milwaukee Bucks", "Phoenix Suns")
+finals_22 <- c("Golden State Warriors", "Boston Celtics")
+finals_23 <- c("Denver Nuggets", "Miami Heat")
+finals_24 <- c("Boston Celtics", "Dallas Mavericks")
+
+
+
+shots_0424$Finals <- ifelse((shots_0424$FRANCHISE %in% finals_04 & shots_0424$SEASON_2 == "2003-04") |
+                              (shots_0424$FRANCHISE %in% finals_05 & shots_0424$SEASON_2 == "2004-05") |
+                              (shots_0424$FRANCHISE %in% finals_06 & shots_0424$SEASON_2 == "2005-06") |
+                              (shots_0424$FRANCHISE %in% finals_07 & shots_0424$SEASON_2 == "2006-07") |
+                              (shots_0424$FRANCHISE %in% finals_08 & shots_0424$SEASON_2 == "2007-08") |
+                              (shots_0424$FRANCHISE %in% finals_09 & shots_0424$SEASON_2 == "2008-09") |
+                              (shots_0424$FRANCHISE %in% finals_10 & shots_0424$SEASON_2 == "2009-10") |
+                              (shots_0424$FRANCHISE %in% finals_11 & shots_0424$SEASON_2 == "2010-11") |
+                              (shots_0424$FRANCHISE %in% finals_12 & shots_0424$SEASON_2 == "2011-12") |
+                              (shots_0424$FRANCHISE %in% finals_13 & shots_0424$SEASON_2 == "2012-13") |
+                              (shots_0424$FRANCHISE %in% finals_14 & shots_0424$SEASON_2 == "2013-14") |
+                              (shots_0424$FRANCHISE %in% finals_15 & shots_0424$SEASON_2 == "2014-15") |
+                              (shots_0424$FRANCHISE %in% finals_16 & shots_0424$SEASON_2 == "2015-16") |
+                              (shots_0424$FRANCHISE %in% finals_17 & shots_0424$SEASON_2 == "2016-17") |
+                              (shots_0424$FRANCHISE %in% finals_18 & shots_0424$SEASON_2 == "2017-18") |
+                              (shots_0424$FRANCHISE %in% finals_19 & shots_0424$SEASON_2 == "2018-19") |
+                              (shots_0424$FRANCHISE %in% finals_20 & shots_0424$SEASON_2 == "2019-20") |
+                              (shots_0424$FRANCHISE %in% finals_21 & shots_0424$SEASON_2 == "2020-21") |
+                              (shots_0424$FRANCHISE %in% finals_22 & shots_0424$SEASON_2 == "2021-22") |
+                              (shots_0424$FRANCHISE %in% finals_23 & shots_0424$SEASON_2 == "2022-23") |
+                              (shots_0424$FRANCHISE %in% finals_24 & shots_0424$SEASON_2 == "2023-24"), TRUE, FALSE)
+
+```
+
+
+
+
+### Shot Chart Data
+```{r}
+# Overall Percentages in each zone over all data to use for shot chart coloring system
+shot_chart_data <- shots_0424 %>%
+  group_by(NEW_ZONE, SHOT_MADE) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  group_by(NEW_ZONE) %>%
+  mutate(total = sum(count), all_percentage = (count / total) * 100) %>%
+  arrange(desc(all_percentage)) %>% 
+  filter(SHOT_MADE == "made")
+
+
+# Join to new datraset to keep shots dataset clean 
+by_zone <- join_by(NEW_ZONE == NEW_ZONE)
+percentages <- shots_0424 %>% 
+  left_join(dplyr::select(shot_chart_data, all_percentage), by=by_zone)
+
+
+
+# Percentages in each zone for each team in each season
+team_chart_data <- shots_0424 %>%
+  group_by(SEASON_2,FRANCHISE,NEW_ZONE, SHOT_MADE) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  group_by(SEASON_2,FRANCHISE,NEW_ZONE) %>%
+  mutate(total = sum(count), team_percentage = (count / total) * 100) %>%
+  arrange(desc(team_percentage)) %>%
+  filter(SHOT_MADE == "made")
+
+# Join to new dataset to keep shots dataset clean 
+by_team <- join_by(NEW_ZONE == NEW_ZONE, SEASON_2 == SEASON_2 ,FRANCHISE == FRANCHISE)
+percentages <- percentages %>% 
+  left_join(dplyr::select(team_chart_data, team_percentage), by=by_team)
+
+
+# Percentages in each zone for each player in each season
+player_chart_data <- shots_0424 %>%
+  group_by(SEASON_2,PLAYER_NAME,NEW_ZONE, SHOT_MADE) %>%
+  summarize(count = n(),.groups = "drop") %>%
+  group_by(SEASON_2, PLAYER_NAME,NEW_ZONE) %>%
+  mutate(total = sum(count), player_zone_percentage = (count / total) * 100) %>%
+  arrange(desc(player_zone_percentage)) %>%
+  filter(SHOT_MADE == "made")
+
+
+# Join to new dataset to keep shots dataset clean 
+by_player <- join_by(NEW_ZONE == NEW_ZONE, SEASON_2 == SEASON_2, PLAYER_NAME == PLAYER_NAME)
+percentages <- percentages %>% 
+  left_join(dplyr::select(player_chart_data, player_zone_percentage), by=by_player)
+
+```
+
+```{r, include = FALSE}
+
+# Team shooting percentage in each zone in each season 
+zone_summary <- percentages %>%
+group_by(SEASON_2, FRANCHISE, Area, Playoffs, Finals) %>%
+summarize(count = n(), .groups = "drop") %>%
+group_by(SEASON_2, FRANCHISE, Playoffs, Finals) %>%
+mutate(total = sum(count), percentage = (count / total) * 100)
+
+  
+# Selecting test season of 2023-24 to test graph  
+test_zone <- zone_summary %>% 
+  filter(SEASON_2 == "2023-24")
+
+
+      # Arrange data to keep stacking  consistent
+      test_zone <- test_zone %>%
+        arrange(FRANCHISE, Area)  
+      
+      
+      
+      # Compute cumulative sum for bar labels
+      test_zone <- test_zone %>%
+        group_by(FRANCHISE) %>%
+        mutate(
+          cumulative = cumsum(percentage),
+          midpoint = cumulative - percentage / 2
+        ) %>%
+        ungroup()
+      
+      # Create initial plot, made opaque with alpha value
+      p <- plot_ly(
+        data = test_zone,
+        alpha = 0.5,
+        x = ~percentage,
+        y = ~FRANCHISE,
+        type = 'bar',
+        orientation = 'h',
+        color = ~Area,
+        colors = "Set1",
+        text = ~paste0(round(percentage, 0), "%"),
+        textposition = "none",  # we will handle text with annotations
+        hoverinfo = "text"
+      )
+      
+      # Create annotations to add within vertical stacks
+      annotations <- list()
+      
+      for(i in 1:nrow(test_zone)) {
+        row <- test_zone[i, ]
+        color <- if (row$Finals) "white" else if (row$Playoffs) "black" else "gray"
+        annotations[[i]] <- list(
+          x = row$midpoint,
+          y = row$FRANCHISE,
+          text = paste0(round(row$percentage, 0), "%"),
+          showarrow = FALSE,
+          font = list(color = color, size = 12),
+          xanchor = 'center'
+        )
+      }
+      
+      # Add layout with stacked bars and annotations
+      p <- layout(
+        p,
+        barmode = 'stack',
+        yaxis = list(title = "", categoryorder = "total ascending"),
+        xaxis = list(title = "Percentage"),
+        annotations = annotations
+      )
+      
+      p
+      
+
+```
+
+
+
+```{r, include = FALSE}
+
+# Shot Chart for 2003-04  Season
+shots2004 <- percentages[percentages$SEASON_2 == "2003-04",]
+
+png(file="2004_Shot_Chart.png")
+shotchart(data=shots2004, x="LOC_X", y="LOC_Y", z="all_percentage",num.sect = 5 ,type = "sectors", scatter = FALSE, result = "SHOT_MADE")
+dev.off()
+
+# Shot Chart for 2023-24  Season
+shots2024 <- percentages[percentages$SEASON_2 == "2023-24",]
+png(file="2024_Shot_Chart.png")
+shotchart(data=shots2024, x="LOC_X", y="LOC_Y", z="all_percentage",num.sect = 5 ,type = "sectors", scatter = FALSE, result = "SHOT_MADE")
+dev.off()
+
+```
+
+
+
+```{r}
+# All defensive team members 2014-2015 season
+alldefense_players <- c("Leonard, Kawhi", "Green, Draymond", "Allen, Tony","Jordan, DeAndre", "Paul, Chris", "Davis, Anthony", "Butler, Jimmy", "Bogut, Andrew", "Wall, John", "Duncan, Tim")
+
+# Labeling shot atttempts that were defended by one of these defenders
+defense$All_Defense <- ifelse(defense$CLOSEST_DEFENDER %in% alldefense_players == TRUE, "Yes", "No")
+
+# This could be more useful 
+defender_distance <- defense %>%
+  group_by(CLOSEST_DEFENDER, All_Defense, SHOT_RESULT) %>%
+  summarize(average_dist = mean(CLOSE_DEF_DIST), count = n()) %>%
+  group_by(CLOSEST_DEFENDER, All_Defense) %>%
+  mutate(shots_defended = sum(count), percentage_against = (count / shots_defended) * 100) %>% 
+  filter(SHOT_RESULT == "made")
+
+# Average total shots defended is 254, just go to 250
+defender_distance <- defender_distance[defender_distance$shots_defended >= 250, ]
+
+# Save image for further analysis
+png(file="All_Defense_Plot.png")
+
+# Change shot legend color scheme to be like yellow to red instead to be easier to read
+ggplot(defender_distance, aes(x = average_dist, y = percentage_against)) + 
+  geom_point(aes(color = All_Defense, size = shots_defended)) +
+  # Create crosshairs quadrants to show separations
+  geom_hline(yintercept = 46.35, linetype = "dashed") +
+  geom_vline(xintercept = 4.2, linetype = "dashed")
+
+dev.off()
+
+# Calculate average distance on shots defended, and percentage of shots against
+alldefense <- defender_distance[defender_distance$CLOSEST_DEFENDER %in% alldefense_players,]
+
+```
+
+
+
+
+```{r, include = FALSE}
+
+# Shooting Zones for each player by Shot Type for each season
+shot_type <- shots_0424 %>%
+  group_by(PLAYER_NAME, SEASON_2, ACTION_TYPE, SHOT_MADE) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  group_by(PLAYER_NAME, SEASON_2, ACTION_TYPE) %>%
+  mutate(total = sum(count), percentage = (count / total) * 100)  %>%
+  ungroup()
+
+test_type <- shot_type %>% 
+  filter(PLAYER_NAME == "Stephen Curry" & SEASON_2 == "2023-24") %>% 
+      slice_max(order_by = total,n=20)
+
+t <- plot_ly(
+  data = test_type,
+  x = ~count,
+  y = ~ACTION_TYPE,
+  type = 'bar',
+  orientation = 'h',
+  color = ~SHOT_MADE,
+  colors = c("green","red"),
+  text = ~paste0(round(percentage, 0), "%"),
+  textposition = "none",
+  hoverinfo = "text"
+) %>%  layout(
+  title = paste('Percentge and Count of Shot Types for', test_type$PLAYER_NAME[1])
+  )
+
+t
+
+
+# Points per shot for each player by Shot Distance for each season
+pts_dist <- shots_0424 %>%
+  group_by(PLAYER_NAME,SEASON_2, SHOT_DISTANCE, PTS, SHOT_MADE) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  group_by(PLAYER_NAME, SEASON_2, SHOT_DISTANCE) %>%
+  mutate(total_points = sum(count*PTS), total_shots = sum(count), pointsPer = total_points/total_shots)  %>%
+  filter(SHOT_MADE == "made") 
+
+test_pts <- pts_dist %>% 
+  filter((PLAYER_NAME == "Stephen Curry" | PLAYER_NAME == "Kevin Durant") & SEASON_2 == "2023-24") 
+
+names <- unique(test_pts$PLAYER_NAME)
+    
+
+pt <- ggplot(test_pts, aes(x=SHOT_DISTANCE, y=pointsPer, group = PLAYER_NAME, color = PLAYER_NAME)) + 
+        geom_smooth() + geom_vline(xintercept = 22) + geom_vline(xintercept = 23.75) + 
+      geom_text(aes(x=18.5, label="Corner 3PT", y=1.7), colour="red", angle=0) +
+      geom_text(aes(x=26.5, label="3PT Line", y=1.7), colour="red", angle=0) +
+  labs(y= "Points Per Shot", x = "Shot Distance",title = paste("Points Per Shot by Distance for", names[1],names[2]))
+
+ggplotly(pt)
+
+```
+
+
+
+```{r}
+# Merge all offensive data sets for clustering to have a more full picture of player similarities 
+
+
+# PLAYERS ARE CLUSTERED BASED ON SHOOTING PERCENTAGES, OVERALL FGM PG, OVREALL FGA PG, OVERALL FG %, OVERALL FREQUENCY OF SHOT, OVERALL EFG, and same categories for both 2PT & 3PT shots respectively for all categories, plus TOTAL 2PM, TOTAL 2PA, TOTAL 3PM, TOTAL 3PA, 2PT FG%, and 3PT FG%
+
+# Pivot wider to get data for each player in a single row
+wide_def <- Defender %>% 
+  pivot_wider(names_from = defender_distance_ft, id_cols = c(player,season) ,values_from = c(freq, fgm, fga, fg, efg, `2fg_freq`, `2fgm`, `2fga`, `2fg`, `3fg_freq`, `3pm`, `3pa`,`3p`)) 
+# Adjust names for distinction later
+colnames(wide_def)[c(3:54)] <- paste('Def', colnames(wide_def)[c(3:54)], sep = '_')
+
+
+# Names were already adjusted here
+wide_drib <- Dribbles %>% 
+  pivot_wider(names_from = dribbles, id_cols = c(player,season) ,values_from = c(freq, fgm, fga, fg, efg, `2fg_freq`, `2fgm`, `2fga`, `2fg`, `3fg_freq`, `3pm`, `3pa`,`3p`))
+
+
+wide_sc <- Shot_Clock %>% 
+  pivot_wider(names_from = shot_clock_sec, id_cols = c(player,season) ,values_from = c(freq, fgm, fga, fg, efg, `2fg_freq`, `2fgm`, `2fga`, `2fg`, `3fg_freq`, `3pm`, `3pa`,`3p`)) 
+
+colnames(wide_sc)[c(3:80)] <- paste('SC', colnames(wide_sc)[c(3:80)], sep = '_')
+
+
+wide_tt <- Touch_Time %>% 
+  pivot_wider(names_from = touch_time_sec, id_cols = c(player,season) ,values_from = c(freq, fgm, fga, fg, efg, `2fg_freq`, `2fgm`, `2fga`, `2fg`, `3fg_freq`, `3pm`, `3pa`,`3p`)) 
+
+colnames(wide_tt)[c(3:41)] <- paste('TT', colnames(wide_tt)[c(3:41)], sep = '_')
+
+
+# Join all data together 
+by_zone <- join_by(player == player,season == season)
+full <- wide_def %>% 
+  full_join(wide_drib, by=by_zone)
+
+full <- full %>% 
+  full_join(wide_sc, by=by_zone)
+
+full <- full %>% 
+  full_join(wide_tt, by=by_zone)
+
+
+# See how many columns and rows are missing data
+full %>% 
+  summarize(across(everything(), ~sum(is.na(.x)))) %>%  t()
+
+#Impute 0s for missing data here, if the NBA doesn't have it then we can assume they have a zero value for this analysis
+full[is.na(full)] <- 0
+
+# Run again to make sure no data is missing
+full %>% 
+  summarize(across(everything(), ~sum(is.na(.x)))) %>%  t()
+
+
+# Calculate zone shooting percentage for each player in each season 
+playerTotals <- percentages %>%
+  group_by(SEASON_2, PLAYER_NAME, SHOT_MADE, NEW_ZONE) %>%
+  summarize(zone_made = n(), .groups = "drop") %>%
+  group_by(SEASON_2, PLAYER_NAME, NEW_ZONE) %>%
+  mutate(zone_total = sum(zone_made), zone_percentage = (zone_made / zone_total) * 100) %>%
+  ungroup() %>%
+  filter(SHOT_MADE == "made", zone_total != 1) %>%
+  group_by(SEASON_2, PLAYER_NAME) 
+
+
+# Calculate two point and three point % for each player in ach season 
+player_percentages <- percentages %>%
+  group_by(PLAYER_NAME,SEASON_2, SHOT_TYPE, SHOT_MADE) %>%
+  summarize(made = n(), games = n_distinct(GAME_ID), .groups = "drop") %>%
+  group_by(PLAYER_NAME, SEASON_2, SHOT_TYPE) %>%
+  mutate(shot_attempts = sum(made), percentage = (made / shot_attempts) * 100) %>%
+  arrange(desc(percentage)) %>% 
+  filter(SHOT_MADE == "made") %>% 
+  pivot_wider(names_from = SHOT_TYPE,id_cols = c(PLAYER_NAME, SEASON_2) , values_from = c(made,shot_attempts,percentage))
+
+# Replace NAs with 0s
+player_percentages[is.na(player_percentages)] <- 0 
+
+# Get number of games played in each season to use for calculating PPG
+gp <- shots_0424 %>%
+  group_by(PLAYER_NAME, SEASON_2) %>%
+  summarize(games_played = n_distinct(GAME_ID), .groups = "drop")
+
+  
+
+  
+# Join data to get total points scored per season for each player then calculate PPG
+by_player <- join_by(SEASON_2 == SEASON_2, PLAYER_NAME == PLAYER_NAME)
+player_percentages <- player_percentages %>% 
+  mutate(TotalPoints = (`made_2PT Field Goal` * 2) + (`made_3PT Field Goal` * 3)) %>% 
+  left_join(gp, by=by_player) %>%  
+  mutate(PPG = round(TotalPoints/games_played,1)) %>% 
+  group_by(SEASON_2) %>% 
+  mutate(PPGrank = dense_rank(desc(interaction(-games_played, TotalPoints, PPG))))
+  
+
+# Join all data together 
+player_summary <- playerTotals %>% 
+  left_join(player_percentages, by=by_player)
+
+
+# Calculate shooting percentage and number total points in each zone for each team in each season 
+team_percentages <- percentages %>%
+  group_by(FRANCHISE,SEASON_2, Area, SHOT_MADE) %>%
+  summarize(made = n(), .groups = "drop") %>%
+  group_by(FRANCHISE, SEASON_2, Area) %>%
+  mutate(shot_attempts = sum(made), percentage = (made / shot_attempts) * 100) %>%
+  arrange(desc(percentage)) %>% 
+  filter(SHOT_MADE == "made") %>% 
+  pivot_wider(names_from = Area,id_cols = c(FRANCHISE, SEASON_2) , values_from = c(made,shot_attempts,percentage)) %>% 
+  mutate(Points_Total = (`made_Restricted Area` *2) + (`made_Mid-Range` * 2) + (`made_Deep Two` * 2) + (`made_Corner Three` * 3) + (`made_High Three` * 3))
+
+# Games played by each team for PPG, need to do this with the lockoputs, COVID, play-in tournaments, etc. mixing up games oper season
+gpT <- percentages %>% 
+  group_by(SEASON_2, FRANCHISE) %>% 
+  summarize(games_played = n_distinct(GAME_ID), .groups = "drop")
+
+# Join data 
+by_team <- join_by(SEASON_2 == SEASON_2, FRANCHISE == FRANCHISE)
+
+# Create Ranks for teams within each season by PPG
+team_summary <- team_percentages %>% 
+  left_join(gpT, by=by_team) %>% 
+  mutate(PPG = round(Points_Total/games_played, 2)) %>% 
+  group_by(SEASON_2) %>% 
+  mutate(PPGrank = dense_rank(desc(interaction(-PPG, Points_Total)))) %>% 
+  arrange(SEASON_2, PPGrank) %>% 
+  rename("Restricted Area FG%" = `percentage_Restricted Area`,
+         "Mid Range FG%" = `percentage_Mid-Range`,
+         "Deep Two FG%" = `percentage_Deep Two`,
+         "Corner Three FG%" = `percentage_Corner Three`,
+         "High Three FG%" = `percentage_High Three`,
+         "Total Points" = `Points_Total`,
+         "Team Points Rank" = `PPGrank`
+         )
+
+# Create a table that's easier to read and print
+team_table <- team_summary %>% 
+  dplyr::select(FRANCHISE,SEASON_2,`Mid Range FG%`,`Deep Two FG%`,`Corner Three FG%`,`High Three FG%`,`Total Points`,PPG,`Team Points Rank`) %>% 
+  rename("Franchise" = FRANCHISE,"Season" = SEASON_2)
+  
+
+# Shrink dataset to have single row for shots made vs attempted for twos and threes, percentages, total points, and PPG
+shooting_data <- player_summary %>% 
+  group_by(PLAYER_NAME, SEASON_2) %>% 
+  reframe(TwoPTM = mean(`made_2PT Field Goal`), TwoPTA = mean(`shot_attempts_2PT Field Goal`), ThreePTM = mean(`made_3PT Field Goal`), 
+          ThreePTA = mean(`shot_attempts_3PT Field Goal`), TwoPTPerc = mean(`percentage_2PT Field Goal`), ThreePTPerc = mean(`percentage_3PT Field Goal`), Points = mean(TotalPoints), PPG = mean(PPG), Rank = mean(PPGrank))
+
+# Create function to clean player names because for example Luka Doncic is spelled as Luka Dončić in full dataset 
+clean_names <- function(name) {
+  name %>%
+    # Convert to lowercase
+    tolower() %>%
+    
+    # Remove accents (e.g., Dončić -> Doncic)
+    stri_trans_general(id = "Latin-ASCII") %>%
+    
+    # Remove suffixes like Jr, Sr, II, III, IV, etc.
+    gsub("\\b(jr|sr|ii|iii|iv)\\b", "", .) %>%
+    
+    # Remove punctuation
+    gsub("[[:punct:]]", "", .) %>%
+    
+    # Collapse multiple spaces into one
+    gsub("\\s+", " ", .) %>%
+    
+    # Trim leading/trailing whitespace
+    trimws() %>% 
+    
+    # Capitalize first letter of first and last name
+    str_to_title()
+  
+}
+
+
+# Apply function to both datasets so names will match in new column
+full <- full %>% mutate(player_clean = clean_names(player))
+shooting_data <- shooting_data %>% mutate(player_clean = clean_names(PLAYER_NAME))
+
+# Merge data by cleaned names & remove 2024-25 data because it's only in one dataset
+by_zone <- join_by(player_clean == player_clean,season == SEASON_2)
+joined_shooting <- full %>%
+  filter(season != "2024-25") %>% 
+  left_join(shooting_data, by = by_zone)
+
+joined_shooting %>% 
+  summarize(across(everything(), ~sum(is.na(.x)))) %>%  t()
+
+# Clear data that is missing values for newly joined columns
+joined_shooting <- joined_shooting[complete.cases(joined_shooting),] %>% 
+  dplyr::select(-c(PLAYER_NAME, Rank)) %>% relocate(player_clean, .after  = PPG)
+
+
+# Scale data to make sure it's not skewed by higher values in different variables
+object <- scale(joined_shooting[3:242])
+
+# Run PCA on the standardized data then summarize to view percent of total variance is accounted for by each number of principal components 
+pca<-prcomp(object)
+summary(pca)
+
+#First 38 PC account for about 90% of the variance
+pc_data <- pca$x[, 1:38]
+
+# Set seed for reproducibility 
+set.seed(1)
+
+# Calculate Euclidean Distance - good for measuring straight-line similarity between players Principal Component Scores  
+ShotDist <- dist(pc_data, method = "euclidean")
+
+# Use the agnes function to perform agglomerative clustering on distance matrix
+# 'diss' (e.g. dissimilarity) set to TRUE facilitates distance matrix
+# Selcted Ward method for minimum variance
+Result <- agnes(ShotDist, diss = TRUE, method = "ward")
+
+# Print the result - 0.989 Agglomerative coefficient (Strong)
+Result
+
+
+# Print the banner plot and dendrogram
+plot(Result)
+
+
+# Check dendrogram to determine 5 clusters is optimal
+aClusters <- cutree(Result, k = 5)
+
+# Append Clusters to the original data frame, then calculate PPG Ranks
+new_data <- data.frame(joined_shooting, aClusters) %>% group_by(season) %>% 
+  mutate(PPGrank = dense_rank(desc(PPG))) %>% 
+  arrange(season, PPGrank)
+
+
+# Calculate mean values for each variable within each Cluster
+clusterMeans <- new_data %>%
+  group_by(aClusters) %>%
+  summarise(across(where(is.numeric), ~mean(.x, na.rm = TRUE)))
+
+
+# Calculate standard deviation of each variable across cluster means
+clusterStd <- apply(clusterMeans[,2:241], 2, sd)
+
+# Sort variables by descending SD
+top_vars <- sort(clusterStd, decreasing = TRUE)
+
+vars <- data.frame(top_vars)
+
+# Pick top 20 variables 
+top_n_vars <- names(top_vars)[1:25]
+
+# View those variables across clusters
+bestMeans <- clusterMeans %>% dplyr::select(aClusters, all_of(top_n_vars)) 
+
+
+#I summarized findings into a csv and am loading them here 
+cluster_summary <- read_csv('cluster_summary.csv')
+cluster_summary <- cluster_summary %>%  dplyr::select(-1)
+cluster_summary[is.na(cluster_summary)] <- "" 
+
+
+
+# Use Euclidean distances to find those with the smallest distances from a selected players 
+
+# Match PC data to player name and season
+rownames(pc_data) <- paste(joined_shooting$player, joined_shooting$season) 
+
+# Convert Euclidean distances to a matrix
+ShotDist_matrix <- as.matrix(dist(pc_data, method = "euclidean"))
+
+
+# Select a player for testing
+selected_player <- "Stephen Curry"
+
+# Select a player and season for testing
+selected_row <- "Stephen Curry 2023-24" 
+
+# Get distances from this player-season to all others
+distances <- ShotDist_matrix[selected_row, ]
+
+# Remove all observations that match the same player name to not compare a player to themself
+filtered_distances <- distances[!grepl(selected_player, names(distances))]
+
+# Sort and return top 5 closest players
+top_matches <- head(sort(filtered_distances), 5)
+
+# Store in a dataframe 
+result_df <- data.frame(
+  Player_Season = names(top_matches),
+  Distance = as.vector(top_matches)
+)
+
+# Calculate Similarity Score to compare athletes
+result_df$SimilarityScore <- round((1/(1+result_df$Distance)) * 1000,1)
+
+# Separate Player & Season to do join for Cluster later 
+result_df <- result_df %>%
+  separate(Player_Season, into = c("Player", "Season"), sep = "(?=2\\d{3})") 
+
+# Player column returns with white space at the end, need to remove for join
+result_df$Player <- trimws(result_df$Player)
+
+# Join dataframes to get Cluster of similar players and dplyr::select only relevant rows 
+by_clust <- join_by(Player == player, Season == season)
+result_df <- result_df %>% 
+  left_join(new_data, by = by_clust) %>% 
+  dplyr::select(Player,Season,SimilarityScore, aClusters)
+
+
+```
+
+
+Individual Shot Analysis
+=====================================
+
+
+### Build App off of this 
+```{r, warning=FALSE}
+ui <- fluidPage(
+  
+      # Styling for plots 
+      tags$head(tags$style("
+        #shot_plot {height: 800px !important;}
+        #shot_plot2 {height: 800px !important;}
+        #PP_plot {height: 400px !important;}
+        #MnM_plot {height: 400px !important;}
+        #team_plot {height: 600px !important;}
+        #breakdown {height: 600px !important;}
+      ")),
+  tabsetPanel(id = "main_tab",
+      tabPanel("Player Shot Charts",
+      titlePanel("Player Shot Charts"),
+  fluidRow(
+    column(3,
+          selectInput("season_select", "Left Season:", 
+                  choices = sort(unique(shooting_data$SEASON_2),decreasing = TRUE))),
+     column(3, pickerInput(
+        inputId = "p1",
+        label = "Left Player(s)",
+        choices = sort(unique((shooting_data$PLAYER_NAME))),
+        multiple = F,
+        options = list(`actions-box` = TRUE)
+      )),
+     column(3,
+          selectInput("season_select2", "Right Season:", 
+                  choices = sort(unique(shooting_data$SEASON_2),decreasing = TRUE))),
+     column(3, pickerInput(
+        inputId = "p2",
+        label = "Right Player(s)",
+        choices = sort(unique((shooting_data$PLAYER_NAME))),
+        multiple = F,
+        options = list(`actions-box` = TRUE)
+      )),
+  ),
+  fluidRow(
+    column(4,offset = 1, style = "background-color: #ff5733; padding: 15px; border-radius: 10px;",
+         tags$h2(textOutput("stats1"), style = "text-align: center;")
+         ),
+         column(4, offset = 2, style = "background-color: #7133ff; padding: 15px; border-radius: 10px;",
+         tags$h2(textOutput("stats2"), style = "text-align: center;")
+         ),
+    column(1,)),
+  fluidRow(column(6,style = "margin-bottom: 20px;",
+        plotlyOutput("shot_plot")),
+              column(6,style = "margin-bottom: 20px;",
+                  plotlyOutput("shot_plot2")
+    )),
+  fluidRow(style = "margin-top: -20px;",
+      column(6, 
+          plotlyOutput("MnM_plot")),
+      column(6, 
+          plotlyOutput("MnM_plot2"))
+    ),
+  fluidRow(
+          plotlyOutput("PP_plot"))
+    ),
+  
+  tabPanel("Situational Metrics",
+          titlePanel("Player Comparisons"),
+             
+  fluidRow(column(2,
+        selectInput("comp_season", "Select Season:", 
+                choices = unique(sort(shot_num$SEASON_2)))), 
+    column(2,    
+           pickerInput(
+      inputId = "pd",
+      label = "Dribble Player(s)",
+      choices = unique((Dribbles$player)),
+      multiple = TRUE,
+      options = list(`actions-box` = TRUE)
+    )), column(2,   
+               pickerInput(
+      inputId = "ps",
+      label = "Shot Clock Player(s)",
+      choices = unique((Shot_Clock$player)),
+      multiple = TRUE,
+      options = list(`actions-box` = TRUE)
+    )),column(2,    
+              pickerInput(
+      inputId = "pt",
+      label = "Touch Time Player(s)",
+      choices = unique((Touch_Time$player)),
+      multiple = TRUE,
+      options = list(`actions-box` = TRUE)
+    )), column(2,   
+               pickerInput(
+      inputId = "pdef",
+      label = "Closest Defender Player(s)",
+      choices = unique((Defender$player)),
+      multiple = TRUE,
+      options = list(`actions-box` = TRUE)
+    )
+    ), column(2,  
+              pickerInput(
+      inputId = "pn",
+      label = "Shot Number Player(s)",
+      choices = unique((shot_num$PLAYER_NAME)),
+      multiple = TRUE,
+      options = list(`actions-box` = TRUE)
+    )
+    )
+),
+
+  fluidRow(style = "margin-bottom: 20px;",
+        box(title = "Ball In Hand metrics", solidHeader = T,
+          width = 12, collapsible = F,
+         column(width = 5, offset = 1, plotlyOutput("drib_plot")),
+         column(width = 5, offset = 1, plotlyOutput("touch_plot"))
+     )),
+  fluidRow(style = "margin-top: 20px;",
+        box(title = "Defensive Impact Metrics", solidHeader = T,
+          width = 12, collapsible = F,
+         column(width = 5, offset = 1, plotlyOutput("clock_plot")),
+         column(width = 5, offset = 1, plotlyOutput("defender_plot"))
+     )),
+     fluidRow(style = "margin-top: 20px;",
+        box(title = "Shot Number (Volume vs. Consistent Shooters)", solidHeader = T,
+          width = 12, collapsible = F,
+          column(width = 5, offset = 1, align="center", plotlyOutput("num_plot"))
+        )
+     )),
+
+  tabPanel("Team Metrics",
+            titlePanel("Team Defensive Metrics"),
+  fluidRow(
+    column(6,
+              selectInput(
+      inputId = "pseason",
+      label = "Select Season(s)",
+      choices = unique(percentages$SEASON_2),
+      selected = "2023-24",
+    )),
+    
+    column(6, 
+             pickerInput(
+      inputId = "pteam",
+      label = "Select Team(s)",
+      choices = unique(percentages$FRANCHISE),
+      multiple = TRUE,
+      selected = "New York Knicks",
+      options = list(`actions-box` = TRUE)
+    )
+    )),
+  fluidRow(column(8,offset = 2,tableOutput("teamStats"))),
+  fluidRow(
+      plotlyOutput("team_plot") 
+        ),
+  fluidRow(
+      plotlyOutput("breakdown")
+    )
+    ),
+
+  tabPanel("Playstyle Offense",
+           titlePanel("Comparing Player Styles"),
+  fluidRow(
+         column(6,
+                selectInput("clust_season", "Select Season:", 
+    choices = unique(new_data$season))),
+         column(6,
+                selectInput("clust_player", "Select Player:", 
+    choices = sort(unique(new_data$player))))
+ ),
+  fluidRow(
+          column(4, style = "background-color: #196F3D; padding: 15px; border-radius: 10px;",
+             tags$h2("2PT %", style = "text-align: center;"),
+             tags$h2(textOutput("twoText"), style = "text-align: center;")
+   ),
+           column(4, style = "background-color: #4758D6; padding: 15px; border-radius: 10px;",
+             tags$h2("3PT %", style = "text-align: center;"),
+             tags$h2(textOutput("threeText"), style = "text-align: center;")
+   ),
+           column(4,style = "background-color: #E1811F; padding: 15px; border-radius: 10px;",
+            tags$h2("Offensive Summary", style = "text-align: center;"),
+            tags$h2(textOutput("clusSum"), style = "text-align: center;")
+   ),
+           plotOutput("similarity")
+   ),
+       br(),
+       br(),
+       br(),
+       br(),
+       br(),
+  fluidRow(
+           column(6, offset = 3, tableOutput("style_sum")))
+)
+
+
+)
+)
+
+
+
+  
+server <- function(input, output, session) {
+    
+    
+    
+      # Reactive dataset based on selected season
+  season_data <- reactive({
+    percentages %>% 
+      filter(SEASON_2 == input$season_select)
+  })
+  
+  
+    season_data2 <- reactive({
+    percentages %>% 
+      filter(SEASON_2 == input$season_select2)
+  })
+
+  
+  # Update player selection choices dynamically
+  observeEvent(input$season_select, {
+    available_players <- unique(season_data()$PLAYER_NAME)
+    
+    # Default to "LeBron James" if available, otherwise use the first player
+    default_player <- if ("LeBron James" %in% available_players) "LeBron James" else available_players[1]
+    
+    updatePickerInput(session, "p1", 
+                      choices = sort(available_players), 
+                      selected = default_player)
+    
+  })
+  
+    # Update player selection choices dynamically
+  observeEvent(input$season_select2, {
+    available_players <- unique(season_data2()$PLAYER_NAME)
+    
+    # Default to "LeBron James" if available, otherwise use the first player
+    default_player <- if ("Kevin Durant" %in% available_players) "Kevin Durant" else available_players[1]
+    
+    updatePickerInput(session, "p2", 
+                      choices = sort(available_players), 
+                      selected = default_player)
+    
+  })
+  
+  
+    # Reactive dataset for selected player in selected season
+    filtered_players <- reactive({
+      season_data() %>% 
+        filter(PLAYER_NAME %in% input$p1)
+    })
+    
+    
+     # Reactive dataset for selected player in selected season
+    filtered_players2 <- reactive({
+      season_data2() %>% 
+        filter(PLAYER_NAME %in% input$p2)
+    }) 
+  
+  
+    output$shot_plot <- renderPlotly({
+      selected_shots <- filtered_players()
+      
+      # Use player_zone_percentage calculated earlier to determine zone colors 
+      shotchart(data=selected_shots, x="LOC_X", y="LOC_Y", z="player_zone_percentage",num.sect = 5 ,type = "sectors", scatter = FALSE, result = "SHOT_MADE", legend = TRUE) 
+      }
+      
+    )
+  
+    output$shot_plot2 <- renderPlotly({
+    selected_shots2 <- filtered_players2()
+    
+      # Use player_zone_percentage calculated earlier to determine zone colors 
+      shotchart(data=selected_shots2, x="LOC_X", y="LOC_Y", z="player_zone_percentage",num.sect = 5 ,type = "sectors", scatter = FALSE, result = "SHOT_MADE", legend = TRUE) 
+    }
+    
+  )
+  
+  
+    # Select top 10 shot types for each player (20 is used becasue each type is paired by it's make and miss values)
+  MM <- reactive({
+    shot_type %>% 
+      filter(PLAYER_NAME == input$p1 & SEASON_2 == input$season_select) %>% 
+      slice_max(order_by = total,n=20)
+    
+  })
+  
+  # Select top 10 shot types for each player (20 is used becasue each type is paired by it's make and miss values)
+  MM2 <- reactive({
+    shot_type %>% 
+      filter(PLAYER_NAME == input$p2 & SEASON_2 == input$season_select2) %>% 
+      slice_max(order_by = total,n=20)
+    
+  })
+  
+  
+  output$MnM_plot <- renderPlotly({
+    
+    MMdata <- MM()
+    
+    plot_ly(
+      data = MMdata,
+      x = ~count,
+      y = ~ACTION_TYPE,
+      type = 'bar',
+      orientation = 'h',
+      color = ~SHOT_MADE,
+      colors = c("green","red"),
+      text = ~paste0(round(percentage, 0), "%"),
+      textposition = "none",
+      hoverinfo = "text"
+    ) %>%  layout(
+      title = paste('Percentage and Count of Shot Types for', MMdata$PLAYER_NAME[1])
+      )
+    
+  })
+  
+  
+   output$MnM_plot2 <- renderPlotly({ 
+
+      MMdata2 <- MM2()
+    
+    plot_ly(
+      data = MMdata2,
+      x = ~count,
+      y = ~ACTION_TYPE,
+      type = 'bar',
+      orientation = 'h',
+      color = ~SHOT_MADE,
+      colors = c("green","red"),
+      text = ~paste0(round(percentage, 0), "%"),
+      textposition = "none",
+      hoverinfo = "text"
+    ) %>%  layout(
+      title = paste('Percentage and Count of Shot Types for', MMdata2$PLAYER_NAME[1])
+      )
+  
+   })
+   
+  
+    PP <- reactive({
+      pts_dist %>% 
+        filter(PLAYER_NAME == input$p1 & SEASON_2 == input$season_select)
+    
+  })
+    
+    PP2 <- reactive({
+      pts_dist %>% 
+        filter(PLAYER_NAME == input$p2 & SEASON_2 == input$season_select2)
+    
+  })
+    
+    
+    output$PP_plot <- renderPlotly({
+      
+      PPdata <- rbind(PP(),PP2())
+      
+      pp <- ggplot(PPdata, aes(x=SHOT_DISTANCE, y=pointsPer, group = PLAYER_NAME, color = PLAYER_NAME)) + 
+              geom_smooth() + geom_vline(xintercept = 22) + geom_vline(xintercept = 23.75) + 
+            geom_text(aes(x=18.5, label="Corner 3PT", y=1.7), colour="red", angle=0) +
+            geom_text(aes(x=26.5, label="3PT Line", y=1.7), colour="red", angle=0) +
+        labs(y= "Points Per Shot", x = "Shot Distance",title = paste("Points Per Shot by Distance for", PP()$PLAYER_NAME[1],"and", PP2()$PLAYER_NAME[1]))
+      
+      ggplotly(pp)
+    })
+    
+  
+     
+  season_drib <- reactive({
+    Dribbles %>% 
+      filter(season == input$comp_season)
+  })
+  
+    
+  observeEvent(input$comp_season, {
+    
+    drib_players <- unique(season_drib()$player)
+    
+    drib_default <- if ("LeBron James" %in% drib_players) "LeBron James" else drib_players[1]
+    
+    updatePickerInput(session, "pd", 
+                      choices = sort(drib_players), 
+                      selected = drib_default)
+    
+  })
+  
+    
+  dribble_filtered <- reactive({
+    season_drib() %>% 
+      filter(player %in% input$pd) 
+  })
+  
+  
+  output$drib_plot <- renderPlotly({
+    
+    dribble_data <- dribble_filtered()
+    
+    ggplot(dribble_data, aes(x = dribbles, y = fg, group = player, color = player)) +
+      geom_smooth(method = "loess", se = FALSE, span = 0.5 ) +
+      labs(title = "Shooting Percentage by # Dribbles",
+           x = "# Dribbles",
+           y = "Percentage") + 
+            theme_dark() +
+              ylim(10,75)
+    })
+  
+  
+  season_tt <- reactive({
+    Touch_Time %>% 
+      filter(season == input$comp_season)
+  })
+  
+    
+  observeEvent(input$comp_season, {
+    tt_players <- unique(season_tt()$player)
+    
+    tt_default <- if ("LeBron James" %in% tt_players) "LeBron James" else tt_players[1]
+    
+    updatePickerInput(session, "pt", 
+                      choices = sort(tt_players), 
+                      selected = tt_default)
+    
+  })
+  
+  
+  tt_filtered <- reactive({
+    season_tt() %>% 
+      filter(player %in% input$pt) 
+  })
+  
+  
+  output$touch_plot <- renderPlotly({
+    
+    tt_data <- tt_filtered()
+    
+    ggplot(tt_data, aes(x = touch_time_sec, y = fg, group = player, color = player)) +
+      geom_line() +
+      labs(title = "Shooting Percentage by Touch Time",
+           x = "Touch Time",
+           y = "Percentage") + 
+      theme_dark() +
+              ylim(10,75)
+    })
+
+  
+  
+    season_sc <- reactive({
+    Shot_Clock %>% 
+      filter(season == input$comp_season)
+  })
+  
+    
+  observeEvent(input$comp_season, {
+    sc_players <- unique(season_sc()$player)
+    
+    sc_default <- if ("LeBron James" %in% sc_players) "LeBron James" else sc_players[1]
+    
+    updatePickerInput(session, "ps", 
+                      choices = sort(sc_players), 
+                      selected = sc_default)
+    
+  })
+  
+    sc_filtered <- reactive({
+    season_sc() %>% 
+      filter(player %in% input$ps) 
+  })
+  
+    output$clock_plot <- renderPlotly({
+      
+      sc_data <- sc_filtered()
+      
+      ggplot(sc_data, aes(x = shot_clock_sec, y = fg, group = player, color = player)) +
+        geom_smooth(method = "loess", se = FALSE, span = 0.5) +
+        labs(title = "Shooting Percentage by Shot Clock Time",
+             x = "Shot Clock Time",
+             y = "Percentage") + 
+        theme_dark() +
+                ylim(10,75)
+      })
+    
+    
+    
+  season_def <- reactive({
+    Defender %>% 
+      filter(season == input$comp_season)
+  })
+  
+    
+  observeEvent(input$comp_season, {
+    def_players <- unique(season_def()$player)
+    
+    def_default <- if ("LeBron James" %in% def_players) "LeBron James" else def_players[1]
+    
+    updatePickerInput(session, "pdef", 
+                      choices = sort(def_players), 
+                      selected = def_default)
+    
+  })  
+  
+    
+  def_filtered <- reactive({
+    season_def() %>% 
+      filter(player %in% input$pdef)
+  })
+  
+  output$defender_plot <- renderPlotly({
+    
+    def_data <- def_filtered()
+    
+    ggplot(def_data, aes(x = defender_distance_ft, y = fg, group = player, color = player)) +
+      geom_line() +
+      labs(title = "Shooting Percentage by Defender Distance",
+           x = "Defender Distance",
+           y = "Percentage") + 
+      theme_dark() +
+              ylim(10,75)
+    })
+  
+  
+  
+    season_shotnum <- reactive({
+    shot_num %>% 
+      filter(SEASON_2 == input$comp_season)
+  })
+  
+    
+  observeEvent(input$comp_season, {
+    num_players <- unique(season_shotnum()$PLAYER_NAME)
+    
+    num_default <- if ("LeBron James" %in% num_players) "LeBron James" else num_players[1]
+    
+    updatePickerInput(session, "pn", 
+                      choices = sort(num_players), 
+                      selected = num_default)
+    
+  })
+  
+  num_filtered <- reactive({
+    season_shotnum() %>% 
+      filter(PLAYER_NAME %in% input$pn)
+  })
+  
+  
+  output$num_plot <- renderPlotly({
+    
+    num_data <- num_filtered()
+    
+    ggplot(num_data, aes(x = SHOT_NUMBER, y = percentage, group = PLAYER_NAME, color = PLAYER_NAME)) +
+      geom_smooth(method = "loess", se = FALSE, span = 0.5) +
+      # geom_smooth(method = "loess", se = FALSE, span = 0.5) +
+      labs(title = "Shooting Percentage by Shot Number",
+           x = "Shot Number",
+           y = "Percentage") + 
+      theme_dark() +
+              ylim(5,100)
+    })
+  
+  
+  
+  season_team <- reactive({
+    percentages %>% 
+      filter(SEASON_2 == input$pseason)
+  })
+  
+  
+    
+  observeEvent(input$pseason, {
+    teams <- unique(season_team()$FRANCHISE)
+    
+    team_default <- if ("New York Knicks" %in% teams) "New York Knicks" else teams[1]
+    
+    updatePickerInput(session, "pteam", 
+                      choices = sort(teams), 
+                      selected = team_default)
+    
+  })
+  
+  teams <- reactive({
+    season_team() %>% 
+      filter(FRANCHISE == input$pteam)
+  })
+  
+    output$team_plot <- renderPlotly({
+    selected_teams <- teams()
+    
+    shotchart(data=selected_teams, x="LOC_X", y="LOC_Y", z="team_percentage",num.sect = 5 ,type = "sectors", scatter = FALSE, result = "SHOT_MADE")
+    }
+    
+  )
+    
+    team_shots <- reactive({
+         zone_summary %>% 
+    filter(SEASON_2 == input$pseason)
+      
+    }) 
+    
+    team_stats <- reactive({
+         team_table %>% 
+    filter(Season == input$pseason & Franchise %in% input$pteam)
+      
+    }) 
+    
+    
+    output$teamStats <- renderTable({
+    stats <- team_stats()
+  
+    }, width = "auto", align = "c", bordered = TRUE, striped = TRUE)
+    
+    output$breakdown <- renderPlotly({
+      
+      breaks <- team_shots()
+
+      breaks <- breaks %>%
+        arrange(FRANCHISE, Area)
+      
+      
+      
+      # Compute cumulative sum for annotation placement
+      breaks <- breaks %>%
+        group_by(FRANCHISE) %>%
+        mutate(
+          cumulative = cumsum(percentage),
+          midpoint = cumulative - percentage / 2
+        ) %>%
+        ungroup()
+      
+      # Create plot
+      p <- plot_ly(
+        data = breaks,
+        alpha = 0.5,
+        x = ~percentage,
+        y = ~FRANCHISE,
+        type = 'bar',
+        orientation = 'h',
+        color = ~Area,
+        colors = "Set1",
+        text = ~paste0(round(percentage, 0), "%"),
+        textposition = "none", 
+        hoverinfo = "text"
+      )
+      
+      # Add annotations with proper stacking
+      annotations <- list()
+      for(i in 1:nrow(breaks)) {
+        row <- breaks[i, ]
+        color <- if (row$Finals) "white" else if (row$Playoffs) "black" else "gray"
+        annotations[[i]] <- list(
+          x = row$midpoint,
+          y = row$FRANCHISE,
+          text = paste0(round(row$percentage, 0), "%"),
+          showarrow = FALSE,
+          font = list(color = color, size = 12),
+          xanchor = 'center'
+        )
+      }
+      
+      # Layout with stacked bars and annotations
+      p <- layout(
+        p,
+        barmode = 'stack',
+        yaxis = list(title = "", categoryorder = "total ascending"),
+        xaxis = list(title = "Percentage"),
+        annotations = annotations
+      )
+      
+      p
+      
+    } )
+    
+    
+    
+  clust_year <- reactive({
+    
+    # Ensure input is available
+    req(input$clust_season) 
+    
+    new_data %>% 
+      filter(season == input$clust_season)
+  })
+  
+
+  per_game1 <- reactive({
+    shooting_data %>% 
+      filter(SEASON_2 == input$season_select)
+  }) 
+  
+  per_game2 <- reactive({
+    shooting_data %>% 
+      filter(SEASON_2 == input$season_select2)
+  }) 
+  
+  
+ output$stats1 <- renderText({
+   
+  # Filter data for the selected player, taking into account possible name variations 
+  ppgTot <- per_game1() %>% filter(PLAYER_NAME == input$p1 | player_clean == input$p1)
+  
+  paste("Total Points:", paste0(ppgTot$Points,","), "PPG:", paste0(ppgTot$PPG,","), "Season Rank:", paste0("#",ppgTot$Rank))
+})
+  
+    output$stats2 <- renderText({
+    ppgTot2 <- per_game2() %>% filter(PLAYER_NAME == input$p2 | player_clean == input$p2)
+    
+    paste("Total Points:", paste0(ppgTot2$Points,","), "PPG:", paste0(ppgTot2$PPG,","), "Season Rank:", paste0("#",ppgTot2$Rank))
+  })
+  
+  
+  output$twoText <- renderText({
+    crep <- clust_year() %>% filter(player == input$clust_player | player_clean == input$clust_player)
+    
+    paste(round(crep$TwoPTPerc,1), "%")
+  })
+  
+  
+  output$threeText <- renderText({
+    crep <- clust_year() %>% filter(player == input$clust_player | player_clean == input$clust_player)
+    
+    paste(round(crep$ThreePTPerc,1), "%")
+  })
+  
+  
+    
+  output$clusSum <- renderText({
+    crep <- clust_year() %>% filter(player == input$clust_player)
+    
+    case_when(crep$aClusters == 1 ~ cluster_summary$Summary[1],
+              crep$aClusters == 2 ~ cluster_summary$Summary[2],
+              crep$aClusters == 3 ~ cluster_summary$Summary[3],
+              crep$aClusters == 4 ~ cluster_summary$Summary[4],
+              crep$aClusters == 5 ~ cluster_summary$Summary[5])
+  })
+  
+    
+  observeEvent(input$clust_season, {
+    
+    req(clust_year()) 
+    classP <- unique(clust_year()$player)
+    
+    classD <- if ("LeBron James" %in% classP) "LeBron James" else classP[1]
+    
+    updateSelectInput(session, "clust_player", 
+                      choices = sort(classP), 
+                      selected = classD)
+    
+  })
+    
+    player_matches <- reactive({
+      
+      # Selected Player
+      selected_player <- input$clust_player
+      
+      # Paste together selected player name and season 
+      selected_row <- paste(input$clust_player, input$clust_season)
+      
+          
+      # Get distances from this player-season to all others
+      distances <- ShotDist_matrix[selected_row, ]
+      
+      # Remove all observations that match the same player name to not compare a player to themself      
+      filtered_distances <- distances[!grepl(selected_player, names(distances))]
+      
+      # Sort and get top 5 closest players
+      top_matches <- head(sort(filtered_distances), 5)
+      
+      # Output as data frame
+      result_df <- data.frame(
+        Player_Season = names(top_matches),
+        Distance = as.vector(top_matches)
+      )
+      
+      # Calculate Similarity Score to compare players
+      result_df$SimilarityScore <- round((1/(1+result_df$Distance)) * 1000,1)
+      
+      # Separate Player & Season to do join for Cluster later 
+      result_df <- result_df %>%
+        separate(Player_Season, into = c("Player", "Season"), sep = "(?=2\\d{3})") 
+      
+      # Player name returns with white space at the end, need to remove for join
+      result_df$Player <- trimws(result_df$Player)
+      
+      # Join dataframes to get Cluster of similar players and select only relevant rows 
+      by_clust <- join_by(Player == player, Season == season)
+      result_df <- result_df %>% 
+        left_join(new_data, by = by_clust) %>% 
+        dplyr::select(Player,Season,SimilarityScore)
+
+      
+    })
+    
+  output$similarity <- renderPlot({
+    
+# Create the gt table
+    similar <- player_matches() %>%
+      gt() %>%
+        tab_options(table.background.color = "#f9f9f9",
+        heading.background.color = "dodgerblue4",
+        table.font.weight = "bold",
+        table.font.color = "#333333",
+        row.striping.background_color = "grey",
+        table.width = pct(80),          # Set table width to 100% of the container
+        container.width = px(800),      # Set container width to 800 pixels
+        container.height = px(800)      # Set container height to 400 pixels
+      ) %>% 
+      opt_row_striping() %>% 
+      tab_header(title = "Top 5 Similar Players") %>%
+      cols_label(
+        Player = "Player Name",
+        Season = "Season",
+        SimilarityScore = "Similarity Score"
+      ) %>%
+      fmt_number(columns = vars(SimilarityScore), decimals = 1)
+    
+    # Convert gt table to gtable
+    gtable_obj <- as_gtable(similar)
+    
+    # Render the gtable, start new grid, thn draw table
+    grid.newpage()  
+    grid.draw(gtable_obj) 
+    
+      })
+  
+  output$style_sum <- renderTable(
+    
+    cluster_summary %>%  dplyr::select(-Cluster)
+  )
+  
+}
+
+# Run the application
+shinyApp(ui = ui, server = server)
+```
+
+
