@@ -42,7 +42,7 @@ shots2 <- read.csv("shots2.csv")
 shots3 <- read.csv("shots3.csv")
 shots4 <- read.csv("shots4.csv")
 
-shots <- rbind(shots1,shots2,shots3,shots4)
+shots_0424 <- rbind(shots1,shots2,shots3,shots4)
 
 
 # Defense data set only contains games up to March 4th in 2014-2015 season, can still be used but must mention that it's incomplete
